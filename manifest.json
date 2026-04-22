@@ -1,0 +1,25 @@
+{
+  "name": "MAC MAC Stats",
+  "short_name": "MAC MAC",
+  "description": "Statistiques & Recettes — MAC MAC",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#faf6ee",
+  "theme_color": "#F5A900",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
