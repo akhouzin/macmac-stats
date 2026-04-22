@@ -21,6 +21,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install ImageMagick
+        run: sudo apt-get install -y imagemagick
+
       - name: Accept Android SDK licenses
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
