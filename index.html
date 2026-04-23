@@ -130,6 +130,9 @@
   .spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--border); border-top-color:var(--amber); border-radius:50%; animation:spin 0.7s linear infinite; margin-bottom:10px; }
   @keyframes spin { to { transform:rotate(360deg); } }
   .today-tag { display:inline-block; background:var(--amber); color:#fff; font-family:'Cinzel',serif; font-size:8px; letter-spacing:1px; padding:2px 8px; border-radius:10px; margin-left:8px; vertical-align:middle; }
+  .rapport-tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .rtab { flex:1; padding:9px 6px; border:1px solid var(--border); border-radius:10px; background:var(--card); font-family:'Cinzel',serif; font-size:9px; letter-spacing:1px; color:var(--text-dim); cursor:pointer; text-transform:uppercase; touch-action:manipulation; }
+  .rtab.active { background:var(--amber); color:#fff; border-color:var(--amber); }
 </style>
 </head>
 <body>
@@ -163,7 +166,15 @@
     <button class="day-nav-btn" id="t-next" onclick="changeDay(-1)" disabled>›</button>
   </div>
   <div id="tableau-loading" class="loading"><div class="spinner"></div><br>Chargement…</div>
-  <div id="tableau-content" style="display:none;">
+
+  <!-- Sub-tab switcher (hidden until data loads) -->
+  <div class="rapport-tabs" id="rapport-tabs" style="display:none;">
+    <button class="rtab active" id="rtab-0" onclick="showRapportTab(0)">Café &amp; Bar</button>
+    <button class="rtab" id="rtab-1" onclick="showRapportTab(1)">Restaurent</button>
+  </div>
+
+  <!-- Tab 0: KPIs + Par Serveur + Articles (non-restaurant) -->
+  <div id="rapport-tab-0">
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">Commandes</div><div class="kpi-value amber" id="t-orders">—</div></div>
       <div class="kpi"><div class="kpi-label">Total du jour</div><div class="kpi-value amber" id="t-revenue">—</div><div class="kpi-sub">Dhs</div></div>
@@ -171,8 +182,12 @@
       <div class="kpi"><div class="kpi-label">Articles vendus</div><div class="kpi-value" id="t-items">—</div><div class="kpi-sub">unités</div></div>
     </div>
     <div class="card"><div class="card-title">Par Serveur</div><div id="t-servers"></div></div>
-    <div class="card"><div class="card-title">Articles vendus</div><div id="t-top-items" class="scroll-list"></div></div>
-    <div class="card"><div class="card-title">Consommation</div><div id="t-consumption"></div></div>
+    <div class="card"><div class="card-title">Articles vendus — Café &amp; Bar</div><div id="t-top-items" class="scroll-list"></div></div>
+  </div>
+
+  <!-- Tab 1: Articles vendus Restaurent only -->
+  <div id="rapport-tab-1" style="display:none;">
+    <div class="card"><div class="card-title">Articles vendus — Restaurent</div><div id="t-resto-items" class="scroll-list"></div></div>
   </div>
 </div>
 
@@ -252,9 +267,12 @@ const SB_EMAIL = 'macmac@pos.app';
 const SB_PASS  = 'posmacmac2026';
 
 let sb = null;
+let sbUserId = null;
 const _authReady = (async () => {
   sb = window.supabase.createClient(SB_URL, SUPABASE_ANON_KEY, { auth: { storageKey: 'mm_stats_auth', persistSession: false } });
-  await sb.auth.signInWithPassword({ email: SB_EMAIL, password: SB_PASS });
+  const { data, error } = await sb.auth.signInWithPassword({ email: SB_EMAIL, password: SB_PASS });
+  if (error) throw error;
+  sbUserId = data?.user?.id || null;
 })();
 
 // ══════════════════════════════════════
@@ -284,6 +302,9 @@ let allOrders = [], _charges = [], _chargeDays = {};
 let dayOffset = 0, cmdDayOffset = 0, recMonthOffset = 0;
 let _recSummaryState = { totalRec: 0, totalChg: 0 };
 let _recModalCallback = null;
+let _menuItemCats = {}; // itemName → category, populated from Supabase
+let rapportTab = 0;
+const RESTO_CATS = new Set(['Pizzas','Tacos & Burgers','Pasticcio & Pasta','Sandwichs & Paninis','Cuisine Marocaine','Salades & Accompagnements']);
 
 // ══════════════════════════════════════
 // HELPERS
@@ -297,6 +318,23 @@ function getRecDayKey(y, m, d) {
 const fmtMoney = n => n.toFixed(2);
 const fmtTime  = d => d.toLocaleTimeString('fr-MA', { hour:'2-digit', minute:'2-digit', timeZone:'Africa/Casablanca' });
 const fmtDate  = d => d.toLocaleDateString('fr-FR', { weekday:'long', day:'2-digit', month:'long', year:'numeric', timeZone:'Africa/Casablanca' });
+
+function orderIdentity(row) {
+  const time = row?.time ? String(row.time) : '';
+  return `${row?.num ?? ''}__${time}`;
+}
+
+function dedupeByIdentity(rows) {
+  const seen = new Set();
+  const deduped = [];
+  for (const row of rows || []) {
+    const key = orderIdentity(row);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(row);
+  }
+  return deduped;
+}
 
 function formatAgo(ts) {
   const mins = Math.floor((Date.now() - ts) / 60000);
@@ -361,25 +399,26 @@ updateClock();
 // ══════════════════════════════════════
 async function fetchAllOrders() {
   const PAGE = 1000;
-  const { count, error } = await sb.from('orders').select('*', { count:'exact', head:true });
+  if (!sbUserId) throw new Error('Auth utilisateur requise');
+  const { count, error } = await sb.from('orders').select('*', { count:'exact', head:true }).eq('user_id', sbUserId);
   if (error) throw new Error(error.message);
   if (!count) return [];
   const pages = Math.ceil(count / PAGE);
   const results = await Promise.all(
     Array.from({ length: pages }, (_, i) =>
-      sb.from('orders').select('*').order('time', { ascending:false }).range(i*PAGE, (i+1)*PAGE-1)
+      sb.from('orders').select('*').eq('user_id', sbUserId).order('time', { ascending:false }).range(i*PAGE, (i+1)*PAGE-1)
     )
   );
-  return results.flatMap(r => r.data || []);
+  return dedupeByIdentity(results.flatMap(r => r.data || []));
 }
 
 // ══════════════════════════════════════
 // APPLY DATA
 // ══════════════════════════════════════
 function applyData(ordersRaw, cancelledRaw, chargesData, chargeDaysData) {
-  const cancelledNums = new Set((cancelledRaw || []).map(r => r.num));
-  allOrders = (ordersRaw || [])
-    .filter(r => !cancelledNums.has(r.num))
+  const cancelledKeys = new Set(dedupeByIdentity(cancelledRaw).map(orderIdentity));
+  allOrders = dedupeByIdentity(ordersRaw)
+    .filter(r => !cancelledKeys.has(orderIdentity(r)))
     .map(r => ({ ...r, items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items, time: new Date(r.time.replace(' ', 'T').replace(/\+00$/, 'Z')) }));
   _charges = chargesData || [];
   _chargeDays = {};
@@ -388,7 +427,6 @@ function applyData(ordersRaw, cancelledRaw, chargesData, chargeDaysData) {
     _chargeDays[r.charge_id][r.day_key] = r.amount;
   });
   document.getElementById('tableau-loading').style.display   = 'none';
-  document.getElementById('tableau-content').style.display   = 'block';
   document.getElementById('commandes-loading').style.display = 'none';
   document.getElementById('commandes-content').style.display = 'block';
   renderPage(currentPage);
@@ -408,14 +446,19 @@ async function loadData() {
   }
 
   try {
-    const [cancelledRes, allRaw, chargesRes, chargeDaysRes] = await Promise.all([
-      sb.from('cancelled_orders').select('num'),
+    const [cancelledRes, allRaw, chargesRes, chargeDaysRes, menuItemsRes] = await Promise.all([
+      sb.from('cancelled_orders').select('num,time').eq('user_id', sbUserId),
       fetchAllOrders(),
       sb.from('rec_charges').select('*').order('created_at'),
       sb.from('rec_charge_days').select('*'),
+      sb.from('menu_items').select('name,cat'),
     ]);
     const queryError = cancelledRes.error || chargesRes.error || chargeDaysRes.error;
     if (queryError) throw new Error(queryError.message);
+    if (menuItemsRes.data) {
+      _menuItemCats = {};
+      menuItemsRes.data.forEach(i => { _menuItemCats[i.name] = i.cat; });
+    }
     saveCache(allRaw, cancelledRes.data || []);
     applyData(allRaw, cancelledRes.data || [], chargesRes.data || [], chargeDaysRes.data || []);
     setStatus('online', 'En ligne');
@@ -503,6 +546,16 @@ document.querySelectorAll('.bnav-tab').forEach((btn,i) => {
 });
 
 // ══════════════════════════════════════
+// RAPPORT TABS
+// ══════════════════════════════════════
+function showRapportTab(idx) {
+  rapportTab = idx;
+  document.querySelectorAll('.rtab').forEach((t,i) => t.classList.toggle('active', i===idx));
+  document.getElementById('rapport-tab-0').style.display = idx===0 ? 'block' : 'none';
+  document.getElementById('rapport-tab-1').style.display = idx===1 ? 'block' : 'none';
+}
+
+// ══════════════════════════════════════
 // TABLEAU
 // ══════════════════════════════════════
 function changeDay(dir) {
@@ -527,20 +580,29 @@ function renderTableau() {
   document.getElementById('t-revenue').textContent=fmtMoney(total);
   document.getElementById('t-avg').textContent=orders.length?fmtMoney(total/orders.length):'0.00';
   document.getElementById('t-items').textContent=items;
+  // Par serveur
   const srvMap={};
   orders.forEach(o=>{ const s=o.server||'—'; if(!srvMap[s]) srvMap[s]={count:0,total:0}; srvMap[s].count++; srvMap[s].total+=o.total; });
   document.getElementById('t-servers').innerHTML=Object.entries(srvMap).sort((a,b)=>b[1].total-a[1].total).map(([name,d])=>`
     <div class="row"><div><div class="row-name">${name}</div><div class="row-sub">${d.count} commande${d.count>1?'s':''}</div></div><div class="row-val">${fmtMoney(d.total)} Dhs</div></div>`).join('')||'<div class="empty">Aucune commande</div>';
+  // Build item map then split into resto / non-resto
   const itemMap={};
   orders.forEach(o=>o.items.forEach(item=>{ if(!itemMap[item.name]) itemMap[item.name]={qty:0,rev:0}; itemMap[item.name].qty+=item.qty; itemMap[item.name].rev+=item.price*item.qty; }));
-  const sorted=Object.entries(itemMap).sort((a,b)=>b[1].rev-a[1].rev), maxRev=sorted[0]?.[1].rev||1;
-  document.getElementById('t-top-items').innerHTML=sorted.map(([name,d],i)=>`
-    <div class="row"><div style="flex:1;"><div style="display:flex;align-items:center;">${i<3?`<span class="rank r${i+1}">${i+1}</span>`:`<span style="display:inline-block;width:28px;text-align:center;font-size:11px;color:var(--text-dim);">${i+1}</span>`}<div class="row-name">${name}</div></div>
-    <div class="bar-wrap" style="margin-left:28px;"><div class="bar-fill" style="width:${(d.rev/maxRev*100).toFixed(0)}%"></div></div></div>
-    <div class="row-right"><div class="row-val">×${d.qty}</div><div class="row-dim">${fmtMoney(d.rev)} Dhs</div></div></div>`).join('')||'<div class="empty">Aucun article vendu</div>';
-  const {water,water50,oulmes,oulmesFr,coffeeG,milkCl,theG}=calcConsumption(orders);
-  const consRows=[['💧 Eau minérale 33cl',water,`bouteille${water>1?'s':''}`],['💧 Eau minérale 50cl',water50,`bouteille${water50>1?'s':''}`],['💧 Eau gazeuse Oulmes',oulmes,`bouteille${oulmes>1?'s':''}`],['💧 Eau Oulmes fruitées',oulmesFr,`bouteille${oulmesFr>1?'s':''}`],['☕ Café',coffeeG,'g'],['🥛 Lait',milkCl,'cl'],['🍵 Thé Marocain',theG,'g']].filter(([,qty])=>qty>0);
-  document.getElementById('t-consumption').innerHTML=consRows.map(([l,qty,u])=>`<div class="cons-row"><span class="cons-label">${l}</span><span class="cons-val">${qty} ${u}</span></div>`).join('')||'<div class="empty">Aucune consommation</div>';
+  const isResto=name=>RESTO_CATS.has(_menuItemCats[name]||'');
+  const allSorted=Object.entries(itemMap).sort((a,b)=>b[1].rev-a[1].rev);
+  const barSorted=allSorted.filter(([n])=>!isResto(n));
+  const restoSorted=allSorted.filter(([n])=>isResto(n));
+  const renderItems=(list,el)=>{
+    const maxRev=list[0]?.[1].rev||1;
+    document.getElementById(el).innerHTML=list.map(([name,d],i)=>`
+      <div class="row"><div style="flex:1;"><div style="display:flex;align-items:center;">${i<3?`<span class="rank r${i+1}">${i+1}</span>`:`<span style="display:inline-block;width:28px;text-align:center;font-size:11px;color:var(--text-dim);">${i+1}</span>`}<div class="row-name">${name}</div></div>
+      <div class="bar-wrap" style="margin-left:28px;"><div class="bar-fill" style="width:${(d.rev/maxRev*100).toFixed(0)}%"></div></div></div>
+      <div class="row-right"><div class="row-val">×${d.qty}</div><div class="row-dim">${fmtMoney(d.rev)} Dhs</div></div></div>`).join('')||'<div class="empty">Aucun article vendu</div>';
+  };
+  renderItems(barSorted,'t-top-items');
+  renderItems(restoSorted,'t-resto-items');
+  // Show tabs now that content is ready
+  document.getElementById('rapport-tabs').style.display='flex';
 }
 
 // ══════════════════════════════════════
