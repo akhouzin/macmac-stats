@@ -481,7 +481,8 @@ function flattenChargeDays(obj) {
   return rows;
 }
 
-setInterval(loadData, 60000);
+setInterval(loadData, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadData(); });
 
 // ══════════════════════════════════════
 // PAGE NAV
