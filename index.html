@@ -419,7 +419,7 @@ function applyData(ordersRaw, cancelledRaw, chargesData, chargeDaysData) {
   const cancelledKeys = new Set(dedupeByIdentity(cancelledRaw).map(orderIdentity));
   allOrders = dedupeByIdentity(ordersRaw)
     .filter(r => !cancelledKeys.has(orderIdentity(r)))
-    .map(r => ({ ...r, items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items, time: new Date(r.time.replace(' ', 'T').replace(/\+00$/, 'Z')) }));
+    .map(r => ({ ...r, items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items, time: new Date(new Date(r.time.replace(' ', 'T').replace(/\+00$/, 'Z')).getTime() + 3600 * 1000) }));
   _charges = chargesData || [];
   _chargeDays = {};
   (chargeDaysData || []).forEach(r => {
